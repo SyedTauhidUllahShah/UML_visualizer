@@ -133,7 +133,7 @@ class UMLRelationship:
             "target_multiplicity": self.target_multiplicity,
             "label": self.label
         }
-
+# main class
 class UMLDiagram:
     def __init__(self, name):
         self.name = name
