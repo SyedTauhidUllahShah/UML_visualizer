@@ -102,155 +102,344 @@ class UMLDiagram:
         return rel
     
     def auto_layout(self):
-        """Use networkx to create a non-overlapping layout"""
-        # Create a graph where nodes are UML elements and edges are relationships
+        # Create initial graph for layout
         G = nx.Graph()
         
-        # Calculate proper heights based on content
+        # Build inheritance and implementation hierarchy
+        inheritance_hierarchy = self._build_inheritance_hierarchy()
+        
+        # Calculate proper element sizes based on content
+        self._calculate_element_sizes()
+        
+        # Add nodes to graph with size attributes
         for element_id, element in self.elements.items():
+            G.add_node(element_id, width=element.width, height=element.height)
+        
+        # Add relationships as edges with type attributes
+        for rel in self.relationships:
+            rel_type = 1 if rel.relationship_type in [RelationType.INHERITANCE, RelationType.IMPLEMENTATION] else 2
+            G.add_edge(rel.source_id, rel.target_id, type=rel_type)
+        
+        # Assign hierarchy layers
+        layers = self._assign_hierarchy_layers(inheritance_hierarchy)
+        
+        # Position elements by layer with increased spacing
+        self._position_by_layer(layers)
+
+        # Apply enhanced force-directed adjustment to separate elements
+        self._force_directed_adjustment(50)
+        
+        # Final passes to resolve overlaps
+        for _ in range(5):
+            self._resolve_overlaps()
+    
+    def _calculate_element_sizes(self):
+        """Calculate proper element sizes based on content"""
+        for element_id, element in self.elements.items():
+            # Base height for name section
             name_height = 30
             
             if isinstance(element, UMLClass):
-                attr_height = max(25 * len(element.attributes), 15)
-                method_height = max(25 * len(element.methods), 15)
+                # Calculate attribute section height
+                attr_count = len(element.attributes)
+                attr_height = max(22 * attr_count, 15) if attr_count > 0 else 10
+                
+                # Calculate method section height
+                method_count = len(element.methods)
+                method_height = max(22 * method_count, 15) if method_count > 0 else 10
+                
+                # Adjust width based on content length
+                max_width = 200  # Base width
+                for attr in element.attributes:
+                    attr_text = f"{attr.visibility.value}{attr.name}: {attr.type_name}"
+                    text_width = len(attr_text) * 6.5  # Approximate width based on text length
+                    max_width = max(max_width, text_width + 20)  # Add padding
+                
+                for method in element.methods:
+                    method_text = format_method_text(method, 100)  # Get method text
+                    text_width = len(method_text) * 6.5  # Approximate width based on text length
+                    max_width = max(max_width, text_width + 20)  # Add padding
+                
+                element.width = min(max_width, 350)  # Cap max width
                 element.height = name_height + attr_height + method_height
+                
             elif isinstance(element, UMLInterface):
-                method_height = max(25 * len(element.methods), 15)
+                # Calculate method section height
+                method_count = len(element.methods)
+                method_height = max(22 * method_count, 15) if method_count > 0 else 10
+                
+                # Adjust width based on content length
+                max_width = 200  # Base width
+                for method in element.methods:
+                    method_text = format_method_text(method, 100)  # Get method text
+                    text_width = len(method_text) * 6.5  # Approximate width based on text length
+                    max_width = max(max_width, text_width + 20)  # Add padding
+                
+                element.width = min(max_width, 300)  # Cap max width
                 element.height = name_height + method_height
-            
-            # Add node with size attributes
-            G.add_node(element_id, width=element.width, height=element.height)
-        
-        # Add edges based on relationships
-        for rel in self.relationships:
-            G.add_edge(rel.source_id, rel.target_id)
-        
-        # Handle disconnected components
-        if not nx.is_connected(G) and len(G.nodes) > 0:
-            # For each disconnected component, arrange it separately
-            components = list(nx.connected_components(G))
-            
-            # Layout each component with spring layout
-            for i, component in enumerate(components):
-                subgraph = G.subgraph(component)
-                
-                # Get positions with spring layout
-                pos = nx.spring_layout(subgraph, k=0.5, iterations=100)
-                
-                # Scale and position this component
-                scale_factor = 600  # Increase spacing between nodes
-                offset_x = i * 1000  # Horizontal spacing between components
-                offset_y = 0
-                
-                # Apply positions to elements
-                for node_id, (x, y) in pos.items():
-                    element = self.elements[node_id]
-                    element.x = x * scale_factor + offset_x
-                    element.y = y * scale_factor + offset_y
-        else:
-            # Use spring layout for the entire graph
-            pos = nx.spring_layout(G, k=0.5, iterations=100)
-            
-            # Apply layout to elements
-            scale_factor = 600  # Increase spacing between nodes
-            for node_id, (x, y) in pos.items():
-                element = self.elements[node_id]
-                element.x = x * scale_factor
-                element.y = y * scale_factor
-        
-        # Adjust positions to ensure no overlaps
-        self._resolve_overlaps()
-        
-        # Special layout adjustments for inheritance hierarchies
-        self._adjust_inheritance_hierarchies()
     
-    def _resolve_overlaps(self):
-        """Resolve any overlapping elements"""
-        overlap_resolved = False
-        iteration = 0
-        max_iterations = 50
-        
-        while not overlap_resolved and iteration < max_iterations:
-            overlap_resolved = True
-            iteration += 1
-            
-            elements = list(self.elements.values())
-            for i, elem1 in enumerate(elements):
-                for elem2 in elements[i+1:]:
-                    # Check if elements overlap
-                    overlap_x = (elem1.x < elem2.x + elem2.width and 
-                                elem1.x + elem1.width > elem2.x)
-                    overlap_y = (elem1.y < elem2.y + elem2.height and 
-                                elem1.y + elem1.height > elem2.y)
-                    
-                    if overlap_x and overlap_y:
-                        overlap_resolved = False
-                        
-                        # Calculate overlap amounts
-                        overlap_x_amount = min(elem1.x + elem1.width - elem2.x, 
-                                              elem2.x + elem2.width - elem1.x)
-                        overlap_y_amount = min(elem1.y + elem1.height - elem2.y, 
-                                              elem2.y + elem2.height - elem1.y)
-                        
-                        # Push apart based on minimum overlap
-                        if overlap_x_amount < overlap_y_amount:
-                            # Push horizontally
-                            if elem1.x < elem2.x:
-                                elem1.x -= overlap_x_amount / 2 + 20  # Add extra space
-                                elem2.x += overlap_x_amount / 2 + 20
-                            else:
-                                elem1.x += overlap_x_amount / 2 + 20
-                                elem2.x -= overlap_x_amount / 2 + 20
-                        else:
-                            # Push vertically
-                            if elem1.y < elem2.y:
-                                elem1.y -= overlap_y_amount / 2 + 20
-                                elem2.y += overlap_y_amount / 2 + 20
-                            else:
-                                elem1.y += overlap_y_amount / 2 + 20
-                                elem2.y -= overlap_y_amount / 2 + 20
-    
-    def _adjust_inheritance_hierarchies(self):
-        """Special adjustments for inheritance relationships"""
-        # Group elements by inheritance relationships
-        hierarchies = {}
-        
-        # Find all inheritance relationships
+    def _build_inheritance_hierarchy(self):
+        """Build inheritance/implementation hierarchy"""
+        hierarchy = {}
         for rel in self.relationships:
             if rel.relationship_type in [RelationType.INHERITANCE, RelationType.IMPLEMENTATION]:
                 parent_id = rel.target_id
                 child_id = rel.source_id
                 
-                if parent_id not in hierarchies:
-                    hierarchies[parent_id] = []
+                if parent_id not in hierarchy:
+                    hierarchy[parent_id] = []
                 
-                hierarchies[parent_id].append(child_id)
+                hierarchy[parent_id].append(child_id)
+        return hierarchy
+    
+    def _assign_hierarchy_layers(self, hierarchy):
+        """Assign elements to layers based on inheritance hierarchy"""
+        layers = {}
+        visited = set()
         
-        # Adjust positions for each hierarchy
-        for parent_id, children_ids in hierarchies.items():
-            if parent_id in self.elements and children_ids:
-                parent = self.elements[parent_id]
+        def assign_layer(element_id, layer=0):
+            if element_id in visited:
+                return
+            
+            visited.add(element_id)
+            
+            if layer not in layers:
+                layers[layer] = []
+            
+            layers[layer].append(element_id)
+            
+            # Process children
+            children = hierarchy.get(element_id, [])
+            for child_id in children:
+                assign_layer(child_id, layer + 1)
+        
+        # Find root elements (interfaces and parents with no parents)
+        roots = []
+        for element_id, element in self.elements.items():
+            is_child = False
+            for rel in self.relationships:
+                if rel.relationship_type in [RelationType.INHERITANCE, RelationType.IMPLEMENTATION]:
+                    if rel.source_id == element_id:
+                        is_child = True
+                        break
+            
+            if not is_child:
+                roots.append(element_id)
+        
+        # Assign layers starting from roots
+        for root_id in roots:
+            assign_layer(root_id)
+        
+        # Handle any remaining elements
+        layer_count = len(layers)
+        remaining_layer = layer_count
+        for element_id in self.elements:
+            if element_id not in visited:
+                if remaining_layer not in layers:
+                    layers[remaining_layer] = []
+                layers[remaining_layer].append(element_id)
+        
+        return layers
+    
+    def _position_by_layer(self, layers):
+        """Position elements by layer with improved spacing"""
+        if not layers:
+            # Fallback for no layers - use basic grid layout
+            self._grid_layout()
+            return
+            
+        max_layer = max(layers.keys()) if layers else 0
+        
+        # Increased spacing between layers and elements
+        layer_spacing = 300  # Vertical spacing between layers
+        min_element_spacing = 80  # Minimum horizontal spacing between elements
+        
+        # First pass: position interfaces at the top
+        interface_ids = [eid for eid, e in self.elements.items() if isinstance(e, UMLInterface)]
+        if interface_ids:
+            interface_layer = -1  # Place interfaces above top layer
+            if interface_layer not in layers:
+                layers[interface_layer] = []
+            for eid in interface_ids:
+                # Remove from other layers if present
+                for layer_num in list(layers.keys()):
+                    if layer_num != interface_layer and eid in layers[layer_num]:
+                        layers[layer_num].remove(eid)
+                # Add to interface layer
+                if eid not in layers[interface_layer]:
+                    layers[interface_layer].append(eid)
+        
+        # Second pass: position by layer with better distribution
+        for layer, element_ids in sorted(layers.items()):
+            if not element_ids:
+                continue
                 
-                # Arrange children in a row below parent
-                child_width_total = sum(self.elements[cid].width for cid in children_ids if cid in self.elements)
-                spacing = 50  # Space between children
-                total_width = child_width_total + spacing * (len(children_ids) - 1)
+            # Sort elements to keep related elements close
+            element_ids.sort(key=lambda eid: self.elements[eid].name)
+            
+            # Calculate total width needed for this layer
+            total_width = sum(self.elements[eid].width for eid in element_ids)
+            total_width += min_element_spacing * (len(element_ids) - 1)
+            
+            # Center the layer
+            start_x = -total_width / 2
+            
+            # Position each element in the layer
+            current_x = start_x
+            for element_id in element_ids:
+                element = self.elements[element_id]
+                element.x = current_x
+                element.y = layer * layer_spacing
+                current_x += element.width + min_element_spacing
+    
+    def _grid_layout(self):
+        """Simple grid layout as fallback"""
+        elements = list(self.elements.values())
+        cols = max(int(np.sqrt(len(elements))), 1)
+        row, col = 0, 0
+        spacing_x, spacing_y = 300, 300
+        
+        for element in elements:
+            element.x = col * spacing_x
+            element.y = row * spacing_y
+            col += 1
+            if col >= cols:
+                col = 0
+                row += 1
+    
+    def _force_directed_adjustment(self, iterations=20):
+        """Apply force-directed layout to separate elements"""
+        elements = list(self.elements.values())
+        
+        # Define forces
+        repulsion_strength = 5000  # Strength of repulsion between elements
+        attraction_strength = 0.01  # Strength of attraction for related elements
+        damping = 0.9  # Damping factor to prevent oscillation
+        
+        # Track velocity for each element
+        velocities = {e.id: [0, 0] for e in elements}
+        
+        for _ in range(iterations):
+            # Reset forces
+            forces = {e.id: [0, 0] for e in elements}
+            
+            # Calculate repulsion forces between all elements
+            for i, elem1 in enumerate(elements):
+                for j, elem2 in enumerate(elements[i+1:], i+1):
+                    # Calculate distance between centers
+                    dx = elem2.x + elem2.width/2 - (elem1.x + elem1.width/2)
+                    dy = elem2.y + elem2.height/2 - (elem1.y + elem1.height/2)
+                    distance = max(1, np.sqrt(dx**2 + dy**2))
+                    
+                    # Calculate repulsion force (stronger when closer)
+                    force = repulsion_strength / (distance**2)
+                    
+                    # Normalize direction
+                    if distance > 0:
+                        dx /= distance
+                        dy /= distance
+                    
+                    # Apply force to both elements in opposite directions
+                    forces[elem1.id][0] -= force * dx
+                    forces[elem1.id][1] -= force * dy
+                    forces[elem2.id][0] += force * dx
+                    forces[elem2.id][1] += force * dy
+            
+            # Calculate attraction forces for related elements
+            for rel in self.relationships:
+                if rel.source_id in self.elements and rel.target_id in self.elements:
+                    source = self.elements[rel.source_id]
+                    target = self.elements[rel.target_id]
+                    
+                    # Calculate distance between centers
+                    dx = target.x + target.width/2 - (source.x + source.width/2)
+                    dy = target.y + target.height/2 - (source.y + source.height/2)
+                    distance = max(1, np.sqrt(dx**2 + dy**2))
+                    
+                    # Calculate attraction force (stronger when further)
+                    force = attraction_strength * distance
+                    
+                    # Normalize direction
+                    if distance > 0:
+                        dx /= distance
+                        dy /= distance
+                    
+                    # Apply force to both elements to bring them closer
+                    forces[source.id][0] += force * dx
+                    forces[source.id][1] += force * dy
+                    forces[target.id][0] -= force * dx
+                    forces[target.id][1] -= force * dy
+            
+            # Update positions based on forces
+            for element in elements:
+                # Update velocity with damping
+                velocities[element.id][0] = velocities[element.id][0] * damping + forces[element.id][0]
+                velocities[element.id][1] = velocities[element.id][1] * damping + forces[element.id][1]
                 
-                # Center the row of children under the parent
-                start_x = parent.x + parent.width/2 - total_width/2
+                # Apply velocity to position
+                element.x += velocities[element.id][0]
+                element.y += velocities[element.id][1]
+    
+    def _resolve_overlaps(self):
+        """Resolve overlaps between elements"""
+        elements = list(self.elements.values())
+        min_spacing = 50  # Minimum spacing between elements
+        
+        # Sort elements to prioritize maintaining vertical hierarchy
+        elements.sort(key=lambda e: e.y)
+        
+        # Check for overlaps and resolve them
+        for i, elem1 in enumerate(elements):
+            for j, elem2 in enumerate(elements):
+                if i == j:
+                    continue
+                    
+                # Get element rectangles with spacing
+                rect1 = (elem1.x - min_spacing/2, elem1.y - min_spacing/2, 
+                         elem1.width + min_spacing, elem1.height + min_spacing)
+                rect2 = (elem2.x - min_spacing/2, elem2.y - min_spacing/2, 
+                         elem2.width + min_spacing, elem2.height + min_spacing)
                 
-                # Position children
-                current_x = start_x
-                for child_id in children_ids:
-                    if child_id in self.elements:
-                        child = self.elements[child_id]
-                        child.x = current_x
-                        child.y = parent.y + parent.height + 100  # Place below parent
-                        current_x += child.width + spacing
+                # Check for overlap
+                overlap_x = (rect1[0] < rect2[0] + rect2[2] and rect1[0] + rect1[2] > rect2[0])
+                overlap_y = (rect1[1] < rect2[1] + rect2[3] and rect1[1] + rect1[3] > rect2[1])
                 
-                # Re-check for overlaps after this adjustment
-                self._resolve_overlaps()
+                if overlap_x and overlap_y:
+                    # Calculate overlap amounts
+                    overlap_x_amount = min(rect1[0] + rect1[2] - rect2[0], rect2[0] + rect2[2] - rect1[0])
+                    overlap_y_amount = min(rect1[1] + rect1[3] - rect2[1], rect2[1] + rect2[3] - rect1[1])
+                    
+                    # Determine if elements are in the same layer (similar y-coordinate)
+                    same_layer = abs(elem1.y - elem2.y) < min_spacing
+                    
+                    if same_layer or overlap_x_amount < overlap_y_amount:
+                        # Resolve horizontally
+                        mid1_x = elem1.x + elem1.width/2
+                        mid2_x = elem2.x + elem2.width/2
+                        
+                        if mid1_x < mid2_x:
+                            move_x = overlap_x_amount / 2 + min_spacing/4
+                            elem1.x -= move_x
+                            elem2.x += move_x
+                        else:
+                            move_x = overlap_x_amount / 2 + min_spacing/4
+                            elem1.x += move_x
+                            elem2.x -= move_x
+                    else:
+                        # Resolve vertically
+                        mid1_y = elem1.y + elem1.height/2
+                        mid2_y = elem2.y + elem2.height/2
+                        
+                        if mid1_y < mid2_y:
+                            move_y = overlap_y_amount / 2 + min_spacing/4
+                            elem1.y -= move_y
+                            elem2.y += move_y
+                        else:
+                            move_y = overlap_y_amount / 2 + min_spacing/4
+                            elem1.y += move_y
+                            elem2.y -= move_y
 
+# Added the missing UMLParser class
 class UMLParser:
     def __init__(self):
         self.diagram = UMLDiagram("Generated Diagram")
@@ -441,27 +630,210 @@ class UMLParser:
         self.diagram.auto_layout()
         return self.diagram
 
-def draw_uml_diagram(diagram, filename=None):
-    """Draw a professional UML diagram with proper UML notation"""
-    # Colors
-    header_color = '#FFF59D'  # Light yellow
-    bg_color = '#FFFFFF'      # White
-    border_color = '#333333'  # Dark gray
-    grid_color = '#EEEEEE'    # Light gray
+def calculate_connection_points(source_rect, target_rect):
+    """Calculate optimal connection points between two rectangles"""
+    sx, sy, sw, sh = source_rect
+    tx, ty, tw, th = target_rect
     
-    # Setup figure with a grid background
-    fig_width = 16
-    fig_height = 12
-    dpi = 100
+    # Calculate centers
+    scx, scy = sx + sw/2, sy + sh/2
+    tcx, tcy = tx + tw/2, ty + th/2
     
-    fig = plt.figure(figsize=(fig_width, fig_height), dpi=dpi, facecolor='white')
+    # Calculate direction vector
+    dx = tcx - scx
+    dy = tcy - scy
+    
+    # Get angle between centers
+    angle = np.arctan2(dy, dx)
+    angle_degrees = np.degrees(angle)
+    
+    # Determine connecting sides based on angle
+    if -45 <= angle_degrees <= 45:  # Right of source to left of target
+        sp = (sx + sw, sy + sh/2)
+        tp = (tx, ty + th/2)
+    elif 45 < angle_degrees <= 135:  # Bottom of source to top of target
+        sp = (sx + sw/2, sy + sh)
+        tp = (tx + tw/2, ty)
+    elif angle_degrees > 135 or angle_degrees <= -135:  # Left of source to right of target
+        sp = (sx, sy + sh/2)
+        tp = (tx + tw, ty + th/2)
+    else:  # Top of source to bottom of target
+        sp = (sx + sw/2, sy)
+        tp = (tx + tw/2, ty + th)
+    
+    return {'source': sp, 'target': tp}
+
+def route_path(source_point, target_point, source_rect, target_rect, elements_dict):
+    """Create a smart path between two points that avoids other elements"""
+    # Extract source and target coordinates
+    sx, sy = source_point
+    tx, ty = target_point
+    
+    # Get source and target element dimensions
+    sx_rect, sy_rect, sw_rect, sh_rect = source_rect
+    tx_rect, ty_rect, tw_rect, th_rect = target_rect
+    
+    # Get centers
+    scx, scy = sx_rect + sw_rect/2, sy_rect + sh_rect/2
+    tcx, tcy = tx_rect + tw_rect/2, ty_rect + th_rect/2
+    
+    # Calculate path points based on the relationship direction
+    path_points = [(sx, sy)]  # Start with source point
+    
+    # Calculate the straight-line distance
+    direct_distance = np.sqrt((tx - sx) ** 2 + (ty - sy) ** 2)
+    
+    # Determine the general relationship direction
+    dx = abs(tx - sx)
+    dy = abs(ty - sy)
+    
+    # For inheritance/implementation (usually vertical relationships), prefer straight lines
+    # For other types, use orthogonal paths
+    
+    if dy > 2 * dx:  # Mostly vertical
+        # Add a vertical segment first, then horizontal
+        path_points.append((sx, ty))
+    elif dx > 2 * dy:  # Mostly horizontal
+        # Add a horizontal segment first, then vertical
+        path_points.append((tx, sy))
+    else:  # Mixed direction
+        # Calculate midpoints
+        mid_x = (sx + tx) / 2
+        mid_y = (sy + ty) / 2
+        
+        # Create a path with two segments via midpoint
+        path_points.append((mid_x, sy))
+        path_points.append((mid_x, ty))
+    
+    # Add target point
+    path_points.append((tx, ty))
+    
+    # Simplify path if possible - remove redundant points
+    simplified_path = [path_points[0]]
+    for i in range(1, len(path_points) - 1):
+        prev = simplified_path[-1]
+        current = path_points[i]
+        next_point = path_points[i + 1]
+        
+        # Only add point if it changes direction
+        if not (prev[0] == current[0] == next_point[0] or prev[1] == current[1] == next_point[1]):
+            simplified_path.append(current)
+    
+    simplified_path.append(path_points[-1])
+    
+    return simplified_path
+
+def format_method_text(method, max_length=40):
+    """Format method text with better handling of long signatures"""
+    # Handle parameters
+    param_str = ""
+    if method.params:
+        param_texts = []
+        for param in method.params:
+            param_text = param["name"]
+            if param.get("type"):
+                param_text += f": {param['type']}"
+            param_texts.append(param_text)
+        
+        # Show up to first 2 params, then use ellipsis if too many
+        if len(param_texts) > 2:
+            param_str = ", ".join(param_texts[:2]) + ", ..."
+        else:
+            param_str = ", ".join(param_texts)
+    
+    # Add return type if available
+    return_str = f": {method.return_type}" if method.return_type else ""
+    
+    # Create method signature
+    method_text = f"{method.visibility.value}{method.name}({param_str}){return_str}"
+    
+    # Truncate if too long
+    if len(method_text) > max_length:
+        method_text = method_text[:max_length-3] + "..."
+    
+    return method_text
+
+def draw_arrow_head(ax, x, y, angle, arrow_type, style):
+    """Draw the appropriate arrow head for the relationship type"""
+    # Arrow properties
+    arrow_size = 14
+    arrow_width = 10
+    
+    # Convert angle to radians
+    angle_rad = np.radians(angle)
+    
+    if arrow_type == 'inheritance' or arrow_type == 'implementation':
+        # Triangle for inheritance/implementation
+        dx = np.cos(angle_rad)
+        dy = np.sin(angle_rad)
+        
+        point1 = (x, y)  # Point
+        point2 = (x - arrow_size * dx + arrow_width/2 * dy, 
+                 y - arrow_size * dy - arrow_width/2 * dx)  # Base left
+        point3 = (x - arrow_size * dx - arrow_width/2 * dy,
+                 y - arrow_size * dy + arrow_width/2 * dx)  # Base right
+        
+        triangle = patches.Polygon([point1, point2, point3], 
+                                   closed=True, 
+                                   fill=True, 
+                                   facecolor='white',
+                                   edgecolor='black', 
+                                   linewidth=1.5,
+                                   zorder=3)
+        ax.add_patch(triangle)
+        
+    elif arrow_type == 'aggregation' or arrow_type == 'composition':
+        # Diamond for aggregation/composition
+        dx = np.cos(angle_rad)
+        dy = np.sin(angle_rad)
+        
+        point1 = (x, y)  # Front point
+        point2 = (x - arrow_size/2 * dx + arrow_width/2 * dy, 
+                 y - arrow_size/2 * dy - arrow_width/2 * dx)  # Right point
+        point3 = (x - arrow_size * dx, 
+                 y - arrow_size * dy)  # Back point
+        point4 = (x - arrow_size/2 * dx - arrow_width/2 * dy,
+                 y - arrow_size/2 * dy + arrow_width/2 * dx)  # Left point
+        
+        fill_color = 'black' if arrow_type == 'composition' else 'white'
+        diamond = patches.Polygon([point1, point2, point3, point4], 
+                                  closed=True, 
+                                  fill=True, 
+                                  facecolor=fill_color,
+                                  edgecolor='black', 
+                                  linewidth=1.5,
+                                  zorder=3)
+        ax.add_patch(diamond)
+        
+    elif arrow_type == 'association' or arrow_type == 'dependency':
+        # Open arrowhead for association/dependency
+        dx = np.cos(angle_rad)
+        dy = np.sin(angle_rad)
+        
+        point1 = (x, y)  # Tip
+        point2 = (x - arrow_size * dx + arrow_width/2 * dy, 
+                 y - arrow_size * dy - arrow_width/2 * dx)  # Left wing
+        point3 = (x - arrow_size * dx - arrow_width/2 * dy,
+                 y - arrow_size * dy + arrow_width/2 * dx)  # Right wing
+        
+        ax.plot([point1[0], point2[0]], [point1[1], point2[1]], 
+                color='black', linestyle=style, linewidth=1.5, zorder=3)
+        ax.plot([point1[0], point3[0]], [point1[1], point3[1]], 
+                color='black', linestyle=style, linewidth=1.5, zorder=3)
+
+def draw_uml_diagram(diagram, filename=None, figsize=(24, 18)):
+    """Draw UML diagram with improved formatting and layout"""
+    fig = plt.figure(figsize=figsize, dpi=100, facecolor='white')
     ax = fig.add_subplot(111)
     
-    # Draw grid background
-    ax.set_axisbelow(True)
-    ax.grid(True, color=grid_color, linestyle='-', linewidth=0.5, alpha=0.7)
+    # Colors
+    header_color = '#FFFFAA'  # Yellow for headers
+    interface_color = '#CCFFCC'  # Light green for interfaces
+    abstract_color = '#FFCCCC'  # Light red for abstract classes
+    class_color = '#FFFFFF'  # White for regular classes
+    border_color = '#333333'  # Dark gray for borders
     
-    # Calculate diagram boundaries for proper scaling
+    # Calculate diagram boundaries with padding
     min_x, max_x = float('inf'), float('-inf')
     min_y, max_y = float('inf'), float('-inf')
     
@@ -472,7 +844,7 @@ def draw_uml_diagram(diagram, filename=None):
         max_y = max(max_y, element.y + element.height)
     
     # Add padding
-    padding = 100
+    padding = 300
     min_x -= padding
     min_y -= padding
     max_x += padding
@@ -480,35 +852,41 @@ def draw_uml_diagram(diagram, filename=None):
     
     # Set axis limits
     ax.set_xlim(min_x, max_x)
-    ax.set_ylim(max_y, min_y)  # Invert y-axis for top-down layout
+    ax.set_ylim(max_y, min_y)  # Inverted for top-down view
     
-    # Turn off axis ticks and labels
+    # Remove ticks and spines
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['bottom'].set_visible(False)
-    ax.spines['left'].set_visible(False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
     
-    # Store element information for relationship drawing
+    # Store element information for relationship routing
     element_info = {}
     
-    # Draw UML elements
+    # Draw elements (first pass - classes and interfaces)
     for element_id, element in diagram.elements.items():
-        # Calculate compartment heights
+        # Calculate heights for each section
         name_height = 30
         attr_height = 0
         method_height = 0
         
         if isinstance(element, UMLClass):
-            attr_height = 25 * max(1, len(element.attributes))
-            method_height = 25 * max(1, len(element.methods))
+            attr_height = 22 * max(1, len(element.attributes))
+            method_height = 22 * max(1, len(element.methods))
         elif isinstance(element, UMLInterface):
-            method_height = 25 * max(1, len(element.methods))
+            method_height = 22 * max(1, len(element.methods))
         
         total_height = name_height + attr_height + method_height
         
-        # Store element dimensions
+        # Determine background color based on element type
+        if isinstance(element, UMLInterface):
+            bg_color = interface_color
+        elif isinstance(element, UMLClass) and element.abstract:
+            bg_color = abstract_color
+        else:
+            bg_color = class_color
+        
+        # Store element information
         element_info[element_id] = {
             'x': element.x,
             'y': element.y,
@@ -519,8 +897,7 @@ def draw_uml_diagram(diagram, filename=None):
             'type': 'interface' if isinstance(element, UMLInterface) else 'class'
         }
         
-        # Draw class box
-        # Main rectangle
+        # Draw main rectangle
         rect = patches.Rectangle(
             (element.x, element.y),
             element.width, total_height,
@@ -531,7 +908,7 @@ def draw_uml_diagram(diagram, filename=None):
         )
         ax.add_patch(rect)
         
-        # Class name box
+        # Draw name section
         name_rect = patches.Rectangle(
             (element.x, element.y + total_height - name_height),
             element.width, name_height,
@@ -542,7 +919,7 @@ def draw_uml_diagram(diagram, filename=None):
         )
         ax.add_patch(name_rect)
         
-        # Draw class/interface name
+        # Format class/interface name
         if isinstance(element, UMLClass) and element.abstract:
             name_text = f"«abstract» {element.name}"
             font_style = 'italic'
@@ -553,6 +930,7 @@ def draw_uml_diagram(diagram, filename=None):
             name_text = element.name
             font_style = 'normal'
         
+        # Draw name text
         ax.text(
             element.x + element.width/2,
             element.y + total_height - name_height/2,
@@ -566,14 +944,14 @@ def draw_uml_diagram(diagram, filename=None):
             zorder=3
         )
         
-        # Draw compartment dividers
+        # Draw dividers between sections
         if attr_height > 0:
             ax.plot(
                 [element.x, element.x + element.width],
                 [element.y + method_height, element.y + method_height],
                 color=border_color,
                 linewidth=1.0,
-                zorder=3
+                zorder=2.5
             )
         
         # Draw attributes
@@ -582,46 +960,40 @@ def draw_uml_diagram(diagram, filename=None):
                 attr_type_str = f": {attr.type_name}" if attr.type_name else ""
                 attr_text = f"{attr.visibility.value}{attr.name}{attr_type_str}"
                 
+                # Truncate if too long
+                if len(attr_text) > 40:
+                    attr_text = attr_text[:37] + "..."
+                
                 ax.text(
-                    element.x + 10,
+                    element.x + 10,  # Left margin
                     element.y + method_height + (i + 0.5) * (attr_height / max(1, len(element.attributes))),
                     attr_text,
                     verticalalignment='center',
                     horizontalalignment='left',
-                    fontsize=10,
+                    fontsize=9,
                     family='monospace',
                     zorder=3
                 )
         
         # Draw methods
-        methods = element.methods
+        methods = element.methods if isinstance(element, UMLInterface) else element.methods
         if methods:
             for i, method in enumerate(methods):
-                param_str = ""
-                if method.params and len(method.params) > 0:
-                    param_parts = []
-                    for param in method.params:
-                        param_text = param["name"]
-                        if param.get("type"):
-                            param_text += f": {param['type']}"
-                        param_parts.append(param_text)
-                    param_str = ", ".join(param_parts)
-                    
-                return_str = f": {method.return_type}" if method.return_type else ""
-                method_text = f"{method.visibility.value}{method.name}({param_str}){return_str}"
+                # Format method text
+                method_text = format_method_text(method)
                 
                 ax.text(
-                    element.x + 10,
+                    element.x + 10,  # Left margin
                     element.y + (i + 0.5) * (method_height / max(1, len(methods))),
                     method_text,
                     verticalalignment='center',
                     horizontalalignment='left',
-                    fontsize=10,
+                    fontsize=9,
                     family='monospace',
                     zorder=3
                 )
     
-    # Draw relationships with proper UML notation
+    # Draw relationships (second pass)
     for rel in diagram.relationships:
         source_info = element_info.get(rel.source_id)
         target_info = element_info.get(rel.target_id)
@@ -634,51 +1006,68 @@ def draw_uml_diagram(diagram, filename=None):
         target_rect = (target_info['x'], target_info['y'], target_info['width'], target_info['height'])
         
         connection = calculate_connection_points(source_rect, target_rect)
-        sx, sy = connection['source']
-        tx, ty = connection['target']
+        source_point = connection['source']
+        target_point = connection['target']
         
-        # Draw different line styles based on relationship type
-        if rel.relationship_type == RelationType.IMPLEMENTATION:
-            linestyle = 'dashed'
-        else:
-            linestyle = 'solid'
+        # Get line style based on relationship type
+        line_style = 'dashed' if rel.relationship_type in [RelationType.IMPLEMENTATION, RelationType.DEPENDENCY] else 'solid'
         
-        # Create path for the relationship line
-        path_points = calculate_smart_path(
-            (sx, sy), (tx, ty), 
-            source_rect, target_rect, 
-            diagram.elements
-        )
+        # Calculate path points
+        path_points = route_path(source_point, target_point, source_rect, target_rect, diagram.elements)
         
-        # Draw line segments of the path
+        # Draw path segments
         for i in range(len(path_points) - 1):
             x1, y1 = path_points[i]
             x2, y2 = path_points[i + 1]
             ax.plot([x1, x2], [y1, y2], 
                    color=border_color, 
-                   linestyle=linestyle, 
+                   linestyle=line_style, 
                    linewidth=1.5,
                    zorder=1)
         
-        # Draw the appropriate UML notation for the relationship type
-        # The endpoint is the last point in the path
-        end_point = path_points[-1]
-        # Calculate angle from the second last point to the last point
+        # Calculate endpoint angle for arrow
         if len(path_points) >= 2:
             pre_end_point = path_points[-2]
-            angle = calculate_angle(pre_end_point[0], pre_end_point[1], end_point[0], end_point[1])
+            end_point = path_points[-1]
+            angle = np.degrees(np.arctan2(end_point[1] - pre_end_point[1], 
+                                        end_point[0] - pre_end_point[0]))
         else:
-            angle = calculate_angle(sx, sy, tx, ty)
+            angle = np.degrees(np.arctan2(target_point[1] - source_point[1], 
+                                        target_point[0] - source_point[0]))
         
-        draw_relationship_end(ax, rel.relationship_type, end_point[0], end_point[1], angle)
+        # Map relationship type to arrow style
+        arrow_type_map = {
+            RelationType.INHERITANCE: 'inheritance',
+            RelationType.IMPLEMENTATION: 'inheritance',
+            RelationType.ASSOCIATION: 'association',
+            RelationType.DEPENDENCY: 'dependency',
+            RelationType.AGGREGATION: 'aggregation',
+            RelationType.COMPOSITION: 'composition'
+        }
         
-        # Draw multiplicity labels near the endpoints
+        # Draw arrow head
+        draw_arrow_head(
+            ax, 
+            path_points[-1][0], path_points[-1][1], 
+            angle, 
+            arrow_type_map[rel.relationship_type],
+            line_style
+        )
+        
+        # Draw multiplicity labels
         if rel.source_multiplicity:
-            # Position near the source end
+            # Position near source
             if len(path_points) >= 2:
-                mx, my = get_label_position(path_points[0], path_points[1], 15)
+                dx = path_points[1][0] - path_points[0][0]
+                dy = path_points[1][1] - path_points[0][1]
+                angle = np.arctan2(dy, dx)
+                
+                offset = 15
+                mx = path_points[0][0] + offset * np.sin(angle)
+                my = path_points[0][1] - offset * np.cos(angle)
             else:
-                mx, my = get_label_position((sx, sy), (tx, ty), 15)
+                mx = source_point[0] + 15
+                my = source_point[1] - 15
                 
             ax.text(
                 mx, my,
@@ -692,11 +1081,18 @@ def draw_uml_diagram(diagram, filename=None):
             )
         
         if rel.target_multiplicity:
-            # Position near the target end
+            # Position near target
             if len(path_points) >= 2:
-                mx, my = get_label_position(path_points[-1], path_points[-2], 15)
+                dx = path_points[-1][0] - path_points[-2][0]
+                dy = path_points[-1][1] - path_points[-2][1]
+                angle = np.arctan2(dy, dx)
+                
+                offset = 15
+                mx = path_points[-1][0] + offset * np.sin(angle)
+                my = path_points[-1][1] - offset * np.cos(angle)
             else:
-                mx, my = get_label_position((tx, ty), (sx, sy), 15)
+                mx = target_point[0] + 15
+                my = target_point[1] - 15
                 
             ax.text(
                 mx, my,
@@ -709,7 +1105,7 @@ def draw_uml_diagram(diagram, filename=None):
                 zorder=3
             )
         
-        # Draw relationship name/label if present
+        # Draw relationship label
         if rel.label:
             # Find midpoint of the path
             if len(path_points) >= 2:
@@ -720,8 +1116,8 @@ def draw_uml_diagram(diagram, filename=None):
                 else:
                     mid_x, mid_y = path_points[mid_index]
             else:
-                mid_x = (sx + tx) / 2
-                mid_y = (sy + ty) / 2
+                mid_x = (source_point[0] + target_point[0]) / 2
+                mid_y = (source_point[1] + target_point[1]) / 2
             
             ax.text(
                 mid_x, mid_y,
@@ -734,376 +1130,31 @@ def draw_uml_diagram(diagram, filename=None):
                 zorder=3
             )
     
-    # Add title
+    # Add diagram title
     if diagram.name:
         ax.text(
-            0.5, 0.02,
-            f"Class Diagram for {diagram.name}",
+            0.5, 0.98,
+            diagram.name,
             transform=fig.transFigure,
             horizontalalignment='center',
-            verticalalignment='bottom',
-            fontsize=14,
+            verticalalignment='top',
+            fontsize=16,
             fontweight='bold'
         )
     
     plt.tight_layout()
     
-    # Save if filename provided
     if filename:
         plt.savefig(filename, dpi=300, bbox_inches='tight')
     
     return fig
 
-def calculate_connection_points(source_rect, target_rect):
-    """Calculate the best connection points between two rectangles"""
-    sx, sy, sw, sh = source_rect
-    tx, ty, tw, th = target_rect
-    
-    # Find centers
-    scx, scy = sx + sw/2, sy + sh/2
-    tcx, tcy = tx + tw/2, ty + th/2
-    
-    # Determine the closest sides for connection
-    dx = tcx - scx
-    dy = tcy - scy
-    
-    # Determine connection side
-    if abs(dx) > abs(dy):
-        # Connect horizontally (left or right sides)
-        if dx > 0:
-            # Source on left, target on right
-            source_x = sx + sw
-            source_y = scy
-            target_x = tx
-            target_y = tcy
-        else:
-            # Source on right, target on left
-            source_x = sx
-            source_y = scy
-            target_x = tx + tw
-            target_y = tcy
-    else:
-        # Connect vertically (top or bottom sides)
-        if dy > 0:
-            # Source above target
-            source_x = scx
-            source_y = sy + sh
-            target_x = tcx
-            target_y = ty
-        else:
-            # Source below target
-            source_x = scx
-            source_y = sy
-            target_x = tcx
-            target_y = ty + th
-    
-    return {
-        'source': (source_x, source_y),
-        'target': (target_x, target_y)
-    }
-
-def calculate_smart_path(source_point, target_point, source_rect, target_rect, elements_dict):
-    """Calculate a smart path that avoids obstacles"""
-    sx, sy = source_point
-    tx, ty = target_point
-    
-    # Direct line - simplest case
-    if is_direct_path_clear(source_point, target_point, source_rect, target_rect, elements_dict):
-        return [source_point, target_point]
-    
-    # Otherwise, create a simplified version of a Manhattan path
-    # Determine if a horizontal-first or vertical-first path would be better
-    sx_rect, sy_rect, sw_rect, sh_rect = source_rect
-    tx_rect, ty_rect, tw_rect, th_rect = target_rect
-    
-    # Calculate centers
-    scx = sx_rect + sw_rect/2
-    scy = sy_rect + sh_rect/2
-    tcx = tx_rect + tw_rect/2
-    tcy = ty_rect + th_rect/2
-    
-    dx = abs(tcx - scx)
-    dy = abs(tcy - scy)
-    
-    if dx > dy:
-        # Horizontal-first path might be better
-        mid_x = (sx + tx) / 2
-        path = [source_point, (mid_x, sy), (mid_x, ty), target_point]
-    else:
-        # Vertical-first path might be better
-        mid_y = (sy + ty) / 2
-        path = [source_point, (sx, mid_y), (tx, mid_y), target_point]
-    
-    # Simplify path if possible
-    return simplify_path(path, source_rect, target_rect, elements_dict)
-
-def is_direct_path_clear(p1, p2, source_rect, target_rect, elements_dict):
-    """Check if a direct path between points is clear of obstacles"""
-    # Only need to check elements that might be between the source and target
-    x1, y1 = p1
-    x2, y2 = p2
-    
-    min_x = min(x1, x2)
-    max_x = max(x1, x2)
-    min_y = min(y1, y2)
-    max_y = max(y1, y2)
-    
-    sx_rect, sy_rect, sw_rect, sh_rect = source_rect
-    tx_rect, ty_rect, tw_rect, th_rect = target_rect
-    
-    for element in elements_dict.values():
-        # Skip source and target elements
-        if (element.x == sx_rect and element.y == sy_rect) or \
-           (element.x == tx_rect and element.y == ty_rect):
-            continue
-        
-        # Check if element overlaps with the path bounding box
-        if (element.x + element.width >= min_x and element.x <= max_x and
-            element.y + element.height >= min_y and element.y <= max_y):
-            
-            # More detailed check for line-rectangle intersection
-            # Simplified: If the rectangle contains any point on the line, there's an intersection
-            for t in np.linspace(0, 1, 10):  # Check 10 points along the line
-                px = x1 + t * (x2 - x1)
-                py = y1 + t * (y2 - y1)
-                
-                if (element.x <= px <= element.x + element.width and
-                    element.y <= py <= element.y + element.height):
-                    return False
-    
-    return True
-
-def simplify_path(path, source_rect, target_rect, elements_dict):
-    """Simplify a path by removing unnecessary points"""
-    if len(path) <= 2:
-        return path
-    
-    result = [path[0]]
-    i = 0
-    
-    while i < len(path) - 1:
-        # Check if we can directly connect to a further point
-        for j in range(len(path) - 1, i, -1):
-            if is_direct_path_clear(path[i], path[j], source_rect, target_rect, elements_dict):
-                result.append(path[j])
-                i = j
-                break
-        else:
-            # If no direct path found, keep the next point
-            result.append(path[i + 1])
-            i += 1
-    
-    return result
-
-def calculate_angle(x1, y1, x2, y2):
-    """Calculate angle between two points in degrees"""
-    return np.degrees(np.arctan2(y2 - y1, x2 - x1))
-
-def get_label_position(point1, point2, offset=10):
-    """Calculate position for a label near a line endpoint"""
-    x1, y1 = point1
-    x2, y2 = point2
-    
-    angle = np.arctan2(y2 - y1, x2 - x1)
-    
-    # Position label perpendicular to the line
-    perp_angle = angle + np.pi/2
-    
-    label_x = x1 + offset * np.cos(perp_angle)
-    label_y = y1 + offset * np.sin(perp_angle)
-    
-    return label_x, label_y
-
-def draw_relationship_end(ax, relationship_type, x, y, angle):
-    """Draw the appropriate UML notation at the end of a relationship line"""
-    if relationship_type == RelationType.INHERITANCE or relationship_type == RelationType.IMPLEMENTATION:
-        # Open triangle arrow for inheritance/implementation
-        draw_inheritance_arrow(ax, x, y, angle)
-    elif relationship_type == RelationType.ASSOCIATION:
-        # No decoration for basic association
-        pass
-    elif relationship_type == RelationType.DEPENDENCY:
-        # Open arrow for dependency
-        draw_dependency_arrow(ax, x, y, angle)
-    elif relationship_type == RelationType.AGGREGATION:
-        # Open diamond for aggregation
-        draw_diamond(ax, x, y, angle, filled=False)
-    elif relationship_type == RelationType.COMPOSITION:
-        # Filled diamond for composition
-        draw_diamond(ax, x, y, angle, filled=True)
-
-def draw_inheritance_arrow(ax, x, y, angle):
-    """Draw the standard UML inheritance/implementation arrow (open triangle)"""
-    arrow_size = 15
-    angle_rad = np.radians(angle)
-    
-    # Points for the arrow (triangle)
-    # The tip is at (x,y)
-    p1 = (x, y)
-    
-    # Calculate the two base points of the triangle
-    p2 = (
-        x - arrow_size * np.cos(angle_rad) + arrow_size/2 * np.sin(angle_rad),
-        y - arrow_size * np.sin(angle_rad) - arrow_size/2 * np.cos(angle_rad)
-    )
-    
-    p3 = (
-        x - arrow_size * np.cos(angle_rad) - arrow_size/2 * np.sin(angle_rad),
-        y - arrow_size * np.sin(angle_rad) + arrow_size/2 * np.cos(angle_rad)
-    )
-    
-    # Draw hollow triangle
-    triangle = patches.Polygon(
-        [p1, p2, p3], 
-        closed=True, 
-        fill=True, 
-        facecolor='white', 
-        edgecolor='black', 
-        linewidth=1.5,
-        zorder=2
-    )
-    ax.add_patch(triangle)
-
-def draw_dependency_arrow(ax, x, y, angle):
-    """Draw the standard UML dependency arrow (open arrow)"""
-    arrow_size = 15
-    angle_rad = np.radians(angle)
-    
-    # Calculate the points for the arrow
-    # The tip is at (x,y)
-    p1 = (x, y)
-    
-    # Calculate the two ends of the arrow
-    p2 = (
-        x - arrow_size * np.cos(angle_rad) + arrow_size/3 * np.sin(angle_rad),
-        y - arrow_size * np.sin(angle_rad) - arrow_size/3 * np.cos(angle_rad)
-    )
-    
-    p3 = (
-        x - arrow_size * np.cos(angle_rad) - arrow_size/3 * np.sin(angle_rad),
-        y - arrow_size * np.sin(angle_rad) + arrow_size/3 * np.cos(angle_rad)
-    )
-    
-    # Draw the two lines of the open arrow
-    ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color='black', linewidth=1.5, zorder=2)
-    ax.plot([p1[0], p3[0]], [p1[1], p3[1]], color='black', linewidth=1.5, zorder=2)
-
-def draw_diamond(ax, x, y, angle, filled=False):
-    """Draw the standard UML diamond for aggregation/composition"""
-    diamond_size = 15
-    angle_rad = np.radians(angle)
-    
-    # Calculate the points for the diamond
-    # The tip is at (x,y)
-    p1 = (x, y)
-    
-    # Calculate the side points
-    p2 = (
-        x - diamond_size/2 * np.cos(angle_rad) + diamond_size/2 * np.sin(angle_rad),
-        y - diamond_size/2 * np.sin(angle_rad) - diamond_size/2 * np.cos(angle_rad)
-    )
-    
-    p3 = (
-        x - diamond_size * np.cos(angle_rad),
-        y - diamond_size * np.sin(angle_rad)
-    )
-    
-    p4 = (
-        x - diamond_size/2 * np.cos(angle_rad) - diamond_size/2 * np.sin(angle_rad),
-        y - diamond_size/2 * np.sin(angle_rad) + diamond_size/2 * np.cos(angle_rad)
-    )
-    
-    # Draw the diamond
-    facecolor = 'black' if filled else 'white'
-    diamond = patches.Polygon(
-        [p1, p2, p3, p4], 
-        closed=True, 
-        fill=True, 
-        facecolor=facecolor, 
-        edgecolor='black', 
-        linewidth=1.5,
-        zorder=2
-    )
-    ax.add_patch(diamond)
-
-def create_bank_example():
-    """Create banking system diagram with proper layout"""
-    diagram = UMLDiagram("Banking System")
-    
-    # Create classes with appropriate attributes
-    bank = UMLClass("Bank")
-    bank.add_attribute("BankId", "int", Visibility.PUBLIC)
-    bank.add_attribute("Name", "string", Visibility.PUBLIC)
-    bank.add_attribute("Location", "string", Visibility.PUBLIC)
-    
-    customer = UMLClass("Customer")
-    customer.add_attribute("Id", "int", Visibility.PUBLIC)
-    customer.add_attribute("Name", "string", Visibility.PUBLIC)
-    customer.add_attribute("Adress", "string", Visibility.PUBLIC)
-    customer.add_attribute("PhoneNo", "int", Visibility.PUBLIC)
-    customer.add_attribute("AcctNo", "int", Visibility.PUBLIC)
-    customer.add_method("GeneralInquiry", None, [], Visibility.PUBLIC)
-    customer.add_method("DepositMoney", None, [], Visibility.PUBLIC)
-    customer.add_method("WithdrawMoney", None, [], Visibility.PUBLIC)
-    customer.add_method("OpenAccount", None, [], Visibility.PUBLIC)
-    customer.add_method("CloseAccount", None, [], Visibility.PUBLIC)
-    customer.add_method("ApplyForLoan", None, [], Visibility.PUBLIC)
-    customer.add_method("RequestCard", None, [], Visibility.PUBLIC)
-    
-    teller = UMLClass("Teller")
-    teller.add_attribute("Id", "int", Visibility.PUBLIC)
-    teller.add_attribute("Name", "string", Visibility.PUBLIC)
-    teller.add_method("CollectMoney", None, [], Visibility.PUBLIC)
-    teller.add_method("OpenAccount", None, [], Visibility.PUBLIC)
-    teller.add_method("CloseAccount", None, [], Visibility.PUBLIC)
-    teller.add_method("LoanRequest", None, [], Visibility.PUBLIC)
-    teller.add_method("ProvideInfo", None, [], Visibility.PUBLIC)
-    teller.add_method("IssueCard", None, [], Visibility.PUBLIC)
-    
-    account = UMLClass("Account")
-    account.add_attribute("Id", "int", Visibility.PUBLIC)
-    account.add_attribute("CustomerId", "int", Visibility.PUBLIC)
-    
-    checking = UMLClass("Checking")
-    checking.add_attribute("Id", "int", Visibility.PUBLIC)
-    checking.add_attribute("CustomerId", "int", Visibility.PUBLIC)
-    
-    savings = UMLClass("Savings")
-    savings.add_attribute("Id", "int", Visibility.PUBLIC)
-    savings.add_attribute("CustomerId", "int", Visibility.PUBLIC)
-    
-    loan = UMLClass("Loan")
-    loan.add_attribute("Id", "int", Visibility.PUBLIC)
-    loan.add_attribute("Type", "string", Visibility.PUBLIC)
-    loan.add_attribute("AccountId", "int", Visibility.PUBLIC)
-    loan.add_attribute("CustomerId", "int", Visibility.PUBLIC)
-    
-    # Add elements to diagram
-    diagram.add_element(bank)
-    diagram.add_element(customer)
-    diagram.add_element(teller)
-    diagram.add_element(account)
-    diagram.add_element(checking)
-    diagram.add_element(savings)
-    diagram.add_element(loan)
-    
-    # Add relationships with proper multiplicities
-    diagram.add_relationship(customer.id, bank.id, RelationType.ASSOCIATION, "1..*", "1")
-    diagram.add_relationship(teller.id, bank.id, RelationType.ASSOCIATION, "1..*", "1")
-    diagram.add_relationship(account.id, customer.id, RelationType.ASSOCIATION, "1..*", "1")
-    diagram.add_relationship(checking.id, account.id, RelationType.INHERITANCE)
-    diagram.add_relationship(savings.id, account.id, RelationType.INHERITANCE)
-    diagram.add_relationship(loan.id, customer.id, RelationType.ASSOCIATION, "0..*", "1")
-    diagram.add_relationship(teller.id, account.id, RelationType.ASSOCIATION, "1..*", "1..*")
-    
-    # Auto layout
-    diagram.auto_layout()
-    
-    return diagram
-
-def generate_uml_from_code(code=None, file_path=None, directory_path=None, save_path=None):
-    """Generate UML diagram from Python code"""
+def generate_uml_from_code(code=None, file_path=None, directory_path=None, save_path=None, diagram_name="Class Diagram", figsize=(24, 18)):
+    """Generate UML diagram from Python code with improved layout"""
     parser = UMLParser()
+    
+    if diagram_name:
+        parser.diagram.name = diagram_name
     
     if code:
         parser.parse_text(code)
@@ -1115,70 +1166,319 @@ def generate_uml_from_code(code=None, file_path=None, directory_path=None, save_
         return None
     
     diagram = parser.get_diagram()
-    fig = draw_uml_diagram(diagram, save_path)
+    fig = draw_uml_diagram(diagram, save_path, figsize)
     plt.show()
     return diagram
 
-def show_bank_example():
-    """Show the banking system example with improved layout"""
-    diagram = create_bank_example()
-    fig = draw_uml_diagram(diagram)
-    plt.show()
-    return diagram
+# Example code remains the same
+def complex_banking_example():
+    code = """
+from abc import ABC, abstractmethod
+from typing import List, Dict, Optional, Set
+from datetime import datetime
 
-def create_animal_example():
-    """Create an example Animal hierarchy diagram"""
-    diagram = UMLDiagram("Animal Hierarchy")
-    
-    # Interface
-    pet_interface = UMLInterface("IPet")
-    pet_interface.add_method("play", "None", [], Visibility.PUBLIC)
-    
-    # Abstract class
-    animal = UMLClass("Animal", abstract=True)
-    animal.add_attribute("name", "str", Visibility.PROTECTED)
-    animal.add_method("make_sound", "str", [], Visibility.PUBLIC)
-    animal.add_method("get_name", "str", [], Visibility.PUBLIC)
-    
-    # Concrete classes
-    dog = UMLClass("Dog")
-    dog.add_attribute("breed", "str", Visibility.PRIVATE)
-    dog.add_method("make_sound", "str", [], Visibility.PUBLIC)
-    dog.add_method("get_breed", "str", [], Visibility.PUBLIC)
-    
-    cat = UMLClass("Cat")
-    cat.add_attribute("color", "str", Visibility.PRIVATE)
-    cat.add_method("make_sound", "str", [], Visibility.PUBLIC)
-    cat.add_method("get_color", "str", [], Visibility.PUBLIC)
-    
-    # Add to diagram
-    diagram.add_element(pet_interface)
-    diagram.add_element(animal)
-    diagram.add_element(dog)
-    diagram.add_element(cat)
-    
-    # Add relationships
-    diagram.add_relationship(dog.id, animal.id, RelationType.INHERITANCE)
-    diagram.add_relationship(cat.id, animal.id, RelationType.INHERITANCE)
-    diagram.add_relationship(dog.id, pet_interface.id, RelationType.IMPLEMENTATION)
-    diagram.add_relationship(cat.id, pet_interface.id, RelationType.IMPLEMENTATION)
-    diagram.add_relationship(dog.id, cat.id, RelationType.ASSOCIATION, "1", "*", "chases")
-    
-    # Auto layout
-    diagram.auto_layout()
-    
-    return diagram
+class ILoggable:
+    @abstractmethod
+    def log_activity(self, message: str) -> None:
+        pass
 
-def show_animal_example():
-    """Show animal hierarchy example"""
-    diagram = create_animal_example()
-    fig = draw_uml_diagram(diagram)
-    plt.show()
-    return diagram
+class IIdentifiable:
+    @abstractmethod
+    def get_id(self) -> str:
+        pass
 
+class Person(ABC, IIdentifiable):
+    def __init__(self, id: str, name: str, address: str):
+        self._id = id
+        self._name = name
+        self._address = address
+    
+    def get_id(self) -> str:
+        return self._id
+    
+    def get_name(self) -> str:
+        return self._name
+    
+    def set_address(self, address: str) -> None:
+        self._address = address
+    
+    def get_address(self) -> str:
+        return self._address
 
-# Then you can show the banking system example
-show_bank_example()
+class Customer(Person, ILoggable):
+    def __init__(self, id: str, name: str, address: str, phone: str):
+        super().__init__(id, name, address)
+        self.__phone = phone
+        self.__accounts = []
+        self.__activity_log = []
+    
+    def add_account(self, account) -> None:
+        self.__accounts.append(account)
+    
+    def remove_account(self, account) -> bool:
+        if account in self.__accounts:
+            self.__accounts.remove(account)
+            return True
+        return False
+    
+    def get_accounts(self):
+        return self.__accounts
+    
+    def log_activity(self, message: str) -> None:
+        timestamp = datetime.now()
+        self.__activity_log.append(f"{timestamp}: {message}")
 
-# Or try the animal hierarchy example
-show_animal_example()
+class Employee(Person, ILoggable):
+    def __init__(self, id: str, name: str, address: str, position: str, salary: float):
+        super().__init__(id, name, address)
+        self.__position = position
+        self.__salary = salary
+        self.__branch = None
+        self.__activity_log = []
+    
+    def set_branch(self, branch) -> None:
+        self.__branch = branch
+    
+    def get_branch(self):
+        return self.__branch
+    
+    def log_activity(self, message: str) -> None:
+        timestamp = datetime.now()
+        self.__activity_log.append(f"{timestamp}: {message}")
+
+class Branch(IIdentifiable, ILoggable):
+    def __init__(self, id: str, name: str, address: str):
+        self.__id = id
+        self.__name = name
+        self.__address = address
+        self.__employees = []
+        self.__activity_log = []
+    
+    def get_id(self) -> str:
+        return self.__id
+    
+    def add_employee(self, employee) -> None:
+        self.__employees.append(employee)
+        employee.set_branch(self)
+    
+    def remove_employee(self, employee) -> bool:
+        if employee in self.__employees:
+            self.__employees.remove(employee)
+            employee.set_branch(None)
+            return True
+        return False
+    
+    def log_activity(self, message: str) -> None:
+        timestamp = datetime.now()
+        self.__activity_log.append(f"{timestamp}: {message}")
+
+class Transaction(ABC, IIdentifiable, ILoggable):
+    def __init__(self, id: str, amount: float, timestamp: datetime):
+        self.__id = id
+        self.__amount = amount
+        self.__timestamp = timestamp
+        self.__status = "PENDING"
+    
+    def get_id(self) -> str:
+        return self.__id
+    
+    def get_amount(self) -> float:
+        return self.__amount
+    
+    def get_timestamp(self) -> datetime:
+        return self.__timestamp
+    
+    def get_status(self) -> str:
+        return self.__status
+    
+    def set_status(self, status: str) -> None:
+        self.__status = status
+    
+    @abstractmethod
+    def execute(self) -> bool:
+        pass
+    
+    def log_activity(self, message: str) -> None:
+        print(f"Transaction {self.__id}: {message}")
+
+class DepositTransaction(Transaction):
+    def __init__(self, id: str, amount: float, timestamp: datetime, account, customer):
+        super().__init__(id, amount, timestamp)
+        self.__account = account
+        self.__customer = customer
+    
+    def execute(self) -> bool:
+        if self.get_amount() <= 0:
+            self.set_status("FAILED")
+            return False
+        
+        self.__account.deposit(self.get_amount())
+        self.set_status("COMPLETED")
+        self.log_activity(f"Deposited {self.get_amount()} into account {self.__account.get_id()}")
+        return True
+
+class WithdrawalTransaction(Transaction):
+    def __init__(self, id: str, amount: float, timestamp: datetime, account, customer):
+        super().__init__(id, amount, timestamp)
+        self.__account = account
+        self.__customer = customer
+    
+    def execute(self) -> bool:
+        if self.get_amount() <= 0 or self.__account.get_balance() < self.get_amount():
+            self.set_status("FAILED")
+            return False
+        
+        self.__account.withdraw(self.get_amount())
+        self.set_status("COMPLETED")
+        self.log_activity(f"Withdrew {self.get_amount()} from account {self.__account.get_id()}")
+        return True
+
+class TransferTransaction(Transaction):
+    def __init__(self, id: str, amount: float, timestamp: datetime, from_account, to_account, customer):
+        super().__init__(id, amount, timestamp)
+        self.__from_account = from_account
+        self.__to_account = to_account
+        self.__customer = customer
+    
+    def execute(self) -> bool:
+        if (self.get_amount() <= 0 or 
+            self.__from_account.get_balance() < self.get_amount()):
+            self.set_status("FAILED")
+            return False
+        
+        self.__from_account.withdraw(self.get_amount())
+        self.__to_account.deposit(self.get_amount())
+        self.set_status("COMPLETED")
+        self.log_activity(f"Transferred {self.get_amount()} from account {self.__from_account.get_id()} to {self.__to_account.get_id()}")
+        return True
+
+class Account(ABC, IIdentifiable, ILoggable):
+    def __init__(self, id: str, customer, balance: float = 0.0):
+        self.__id = id
+        self.__customer = customer
+        self.__balance = balance
+        self.__transactions = []
+        self.__activity_log = []
+        customer.add_account(self)
+    
+    def get_id(self) -> str:
+        return self.__id
+    
+    def get_customer(self):
+        return self.__customer
+    
+    def get_balance(self) -> float:
+        return self.__balance
+    
+    def deposit(self, amount: float) -> bool:
+        if amount <= 0:
+            return False
+        self.__balance += amount
+        self.log_activity(f"Deposited {amount}, new balance: {self.__balance}")
+        return True
+    
+    def withdraw(self, amount: float) -> bool:
+        if amount <= 0 or amount > self.__balance:
+            return False
+        self.__balance -= amount
+        self.log_activity(f"Withdrew {amount}, new balance: {self.__balance}")
+        return True
+    
+    def add_transaction(self, transaction) -> None:
+        self.__transactions.append(transaction)
+    
+    def log_activity(self, message: str) -> None:
+        timestamp = datetime.now()
+        self.__activity_log.append(f"{timestamp}: {message}")
+
+class CheckingAccount(Account):
+    def __init__(self, id: str, customer, balance: float = 0.0, overdraft_limit: float = 0.0):
+        super().__init__(id, customer, balance)
+        self.__overdraft_limit = overdraft_limit
+        self.__monthly_fee = 10.0
+    
+    def withdraw(self, amount: float) -> bool:
+        if amount <= 0:
+            return False
+        
+        if self.get_balance() >= amount:
+            return super().withdraw(amount)
+        elif self.get_balance() + self.__overdraft_limit >= amount:
+            self.log_activity(f"Using overdraft for withdrawal of {amount}")
+            return super().withdraw(amount)
+        else:
+            return False
+    
+    def apply_monthly_fee(self) -> None:
+        super().withdraw(self.__monthly_fee)
+        self.log_activity(f"Applied monthly fee of {self.__monthly_fee}")
+
+class SavingsAccount(Account):
+    def __init__(self, id: str, customer, balance: float = 0.0, interest_rate: float = 0.01):
+        super().__init__(id, customer, balance)
+        self.__interest_rate = interest_rate
+        self.__withdrawal_limit = 6
+        self.__withdrawals_this_month = 0
+    
+    def withdraw(self, amount: float) -> bool:
+        if self.__withdrawals_this_month >= self.__withdrawal_limit:
+            self.log_activity(f"Withdrawal limit exceeded")
+            return False
+        
+        if super().withdraw(amount):
+            self.__withdrawals_this_month += 1
+            return True
+        return False
+    
+    def apply_interest(self) -> None:
+        interest = self.get_balance() * self.__interest_rate
+        super().deposit(interest)
+        self.log_activity(f"Applied interest: {interest}")
+    
+    def reset_withdrawal_count(self) -> None:
+        self.__withdrawals_this_month = 0
+        self.log_activity("Reset monthly withdrawal count")
+
+class Bank(IIdentifiable, ILoggable):
+    def __init__(self, id: str, name: str):
+        self.__id = id
+        self.__name = name
+        self.__branches = []
+        self.__customers = set()
+        self.__accounts = []
+        self.__activity_log = []
+    
+    def get_id(self) -> str:
+        return self.__id
+    
+    def add_branch(self, branch) -> None:
+        self.__branches.append(branch)
+    
+    def remove_branch(self, branch) -> bool:
+        if branch in self.__branches:
+            self.__branches.remove(branch)
+            return True
+        return False
+    
+    def add_customer(self, customer) -> None:
+        self.__customers.add(customer)
+    
+    def remove_customer(self, customer) -> bool:
+        if customer in self.__customers:
+            self.__customers.remove(customer)
+            return True
+        return False
+    
+    def register_account(self, account) -> None:
+        self.__accounts.append(account)
+    
+    def log_activity(self, message: str) -> None:
+        timestamp = datetime.now()
+        self.__activity_log.append(f"{timestamp}: {message}")
+    """
+    
+    return generate_uml_from_code(code=code, diagram_name="Banking System", save_path="improved_banking_system.png", figsize=(24, 18))
+
+# Generate UML diagram from the banking example
+diagram = complex_banking_example()
+
